@@ -1,234 +1,149 @@
-from aiogram import Router, types, F
-from aiogram.filters import Command
-from aiogram.fsm.state import StatesGroup, State
+from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
-from typing import List
-
-from bot.config import ADMIN_IDS, MAX_MESSAGE_LEN, MAX_ALBUM_PHOTOS
-from bot.utils.formatting import format_report_html, chunk_text
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.filters import Command
+import re
 
 router = Router()
+
 
 class ReportFSM(StatesGroup):
     title = State()
     period = State()
-    posts_links = State()
+    links = State()
     planned = State()
     actual = State()
     mediaplan = State()
     organic_links = State()
     organic_reach = State()
-    screenshots_mode = State()   # ask: upload photos or give folder url
-    screenshots_collect = State()
-    screenshots_folder_url = State()
+    screenshots = State()
     confirm = State()
 
-@router.message(Command("new_report"))
-async def new_report(msg: types.Message, state: FSMContext):
-    if ADMIN_IDS and msg.from_user and msg.from_user.id not in ADMIN_IDS:
-        await msg.answer("Доступ ограничен. Обратитесь к администратору.")
-        return
 
+def parse_int(text: str) -> int:
+    """Возвращает целое число, очищая пробелы, запятые и прочие символы."""
+    digits = re.sub(r"[^\d]", "", text or "")
+    if not digits:
+        raise ValueError("no digits")
+    return int(digits)
+
+
+@router.message(Command("new_report"))
+async def start_report(msg: types.Message, state: FSMContext):
     await state.set_state(ReportFSM.title)
-    await state.update_data(photos=[])
-    await msg.answer("Название проекта/недели (например, «Камбэк (3 неделя)»):")
+    await msg.answer("Название проекта или недели (например: Кинопоиск_Кибердеревня_Главная Яндекса):")
+
 
 @router.message(ReportFSM.title)
 async def step_title(msg: types.Message, state: FSMContext):
-    await state.update_data(title=msg.text.strip())
+    await state.update_data(title=msg.text)
+    await msg.answer("Период проекта (например: 14–20 октября):")
     await state.set_state(ReportFSM.period)
-    await msg.answer("Период (например, «12–18 авг 2025»):")
+
 
 @router.message(ReportFSM.period)
 async def step_period(msg: types.Message, state: FSMContext):
-    await state.update_data(period=msg.text.strip())
-    await state.set_state(ReportFSM.posts_links)
-    await msg.answer("Ссылки на вышедшие публикации (каждую с новой строки):")
+    await state.update_data(period=msg.text)
+    await msg.answer("Ссылки на публикации (через Enter):")
+    await state.set_state(ReportFSM.links)
 
 
-@router.message(ReportFSM.posts_links)
-async def step_posts(msg: types.Message, state: FSMContext):
-    links = [l.strip() for l in msg.text.splitlines() if l.strip()]
-    await state.update_data(posts_links=links)
-    await state.set_state(ReportFSM.planned)
+@router.message(ReportFSM.links)
+async def step_links(msg: types.Message, state: FSMContext):
+    await state.update_data(links=msg.text)
     await msg.answer("Плановый охват (число):")
+    await state.set_state(ReportFSM.planned)
 
 
-@router.message(ReportFSM.planned, F.text.regexp(r"^\d[\d\s]*$"))
+@router.message(ReportFSM.planned)
 async def step_planned(msg: types.Message, state: FSMContext):
-    planned = int(msg.text.replace(" ", ""))
+    try:
+        planned = parse_int(msg.text)
+    except Exception:
+        await msg.answer("Пожалуйста, введи число (например, 1233500). Можно с пробелами.")
+        return
     await state.update_data(planned=planned)
-    await state.set_state(ReportFSM.actual)
     await msg.answer("Фактический охват (число):")
+    await state.set_state(ReportFSM.actual)
 
 
-@router.message(ReportFSM.actual, F.text.regexp(r"^\d[\d\s]*$"))
+@router.message(ReportFSM.actual)
 async def step_actual(msg: types.Message, state: FSMContext):
-    actual = int(msg.text.replace(" ", ""))
+    try:
+        actual = parse_int(msg.text)
+    except Exception:
+        await msg.answer("Пожалуйста, введи число (например, 1199200). Можно с пробелами.")
+        return
     await state.update_data(actual=actual)
+    await msg.answer("Ссылка на медиаплан (Google Sheets):")
     await state.set_state(ReportFSM.mediaplan)
-    await msg.answer("Ссылка на МП (Google Sheets):")
 
 
 @router.message(ReportFSM.mediaplan)
 async def step_mediaplan(msg: types.Message, state: FSMContext):
-    await state.update_data(mediaplan=msg.text.strip())
+    await state.update_data(mediaplan=msg.text)
+    await msg.answer("Ссылки на органические публикации (если есть):")
     await state.set_state(ReportFSM.organic_links)
-    await msg.answer("Органические публикации (каждую с новой строки). Если нет — отправь «-»:")
 
 
 @router.message(ReportFSM.organic_links)
 async def step_organic_links(msg: types.Message, state: FSMContext):
-    text = msg.text.strip()
-    organic_links: List[str] = [] if text == "-" else [l.strip() for l in text.splitlines() if l.strip()]
-    await state.update_data(organic_links=organic_links)
+    await state.update_data(organic_links=msg.text)
+    await msg.answer("Органический охват (число, если есть):")
     await state.set_state(ReportFSM.organic_reach)
-    await msg.answer("Органический охват (число, можно 0):")
-
-
-@router.message(ReportFSM.organic_reach, F.text.regexp(r"^\d[\d\s]*$"))
-async def step_organic_reach(msg: types.Message, state: FSMContext):
-    organic_reach = int(msg.text.replace(" ", ""))
-    await state.update_data(organic_reach=organic_reach)
-    await state.set_state(ReportFSM.screenshots_mode)
-    await msg.answer(
-        "Скриншоты: отправь фото сюда (альбомами до 10) ИЛИ пришли ссылку на папку.\n\n"
-        "Если хочешь загружать фото — просто начни присылать изображения.\n"
-        "Когда закончишь — отправь слово <b>Готово</b>.\n"
-        "Если предпочитаешь ссылку — пришли ссылку текстом.",
-        parse_mode="HTML",
-    )
-
-
-@router.message(ReportFSM.screenshots_mode, F.photo)
-async def collect_photo_first(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("photos", [])
-    photos.append(msg.photo[-1].file_id)
-    await state.update_data(photos=photos)
-    await state.set_state(ReportFSM.screenshots_collect)
-    await msg.answer("Фото добавлено. Ещё? Когда закончишь — напиши «Готово»." )
-
-
-@router.message(ReportFSM.screenshots_collect, F.photo)
-async def collect_photo(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("photos", [])
-    photos.append(msg.photo[-1].file_id)
-    await state.update_data(photos=photos)
-
-
-@router.message(ReportFSM.screenshots_collect, F.text.lower().in_({"готово", "done", "ok"}))
-async def photos_done(msg: types.Message, state: FSMContext):
-    await state.set_state(ReportFSM.confirm)
-    data = await state.get_data()
-    planned = data["planned"]
-    actual = data["actual"]
-    organic = data["organic_reach"]
-    growth_pct = round((actual / planned - 1) * 100, 1) if planned else 0.0
-    total = actual + organic
-    photos_count = len(data.get("photos", []))
-
-    preview = (
-        f"<b>{data['title']}</b>\n"
-        f"Период: {data['period']}\n\n"
-        f"Плановый охват: {planned:,}".replace(","," ") + "\n"
-        f"Фактический охват: {actual:,}".replace(","," ") + f" (на {growth_pct}% выше плана)\n"
-        f"Органический охват: {organic:,}".replace(","," ") + "\n"
-        f"<b>Итого:</b> {total:,}".replace(","," ") + "\n\n"
-        f"Скриншотов: {photos_count} шт.\n"
-        f"МП: {data['mediaplan']}\n"
-        f"Постов: {len(data['posts_links'])} | Органики: {len(data['organic_links'])}\n\n"
-        f"Сгенерировать отчёт? (Да/Нет)"
-    )
-    await msg.answer(preview, parse_mode="HTML")
-
-
-@router.message(ReportFSM.screenshots_mode, F.text)
-async def screenshots_folder_url(msg: types.Message, state: FSMContext):
-    # user sent a link instead of photos
-    await state.update_data(screenshots_folder_url=msg.text.strip())
-    await state.set_state(ReportFSM.confirm)
-
-    data = await state.get_data()
-    planned = data["planned"]
-    actual = data["actual"]
-    organic = data["organic_reach"]
-    growth_pct = round((actual / planned - 1) * 100, 1) if planned else 0.0
-    total = actual + organic
-
-    preview = (
-        f"<b>{data['title']}</b>\n"
-        f"Период: {data['period']}\n\n"
-        f"Плановый охват: {planned:,}".replace(","," ") + "\n"
-        f"Фактический охват: {actual:,}".replace(","," ") + f" (на {growth_pct}% выше плана)\n"
-        f"Органический охват: {organic:,}".replace(","," ") + "\n"
-        f"<b>Итого:</b> {total:,}".replace(","," ") + "\n\n"
-        f"Скрины: {msg.text.strip()}\n"
-        f"МП: {data['mediaplan']}\n"
-        f"Постов: {len(data['posts_links'])} | Органики: {len(data['organic_links'])}\n\n"
-        f"Сгенерировать отчёт? (Да/Нет)"
-    )
-    await msg.answer(preview, parse_mode="HTML")
-
-
-@router.message(ReportFSM.confirm, F.text.lower().in_({"да", "yes", "y"}))
-async def confirm_yes(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    planned = data["planned"]
-    actual = data["actual"]
-    organic = data["organic_reach"]
-    growth_pct = round((actual / planned - 1) * 100, 1) if planned else 0.0
-    total = actual + organic
-
-    report_html = format_report_html(
-        title=data["title"],
-        period=data["period"],
-        posts_links=data["posts_links"],
-        planned=planned,
-        actual=actual,
-        organic=organic,
-        total=total,
-        mediaplan=data["mediaplan"],
-        screenshots_folder_url=data.get("screenshots_folder_url"),
-        growth_pct=growth_pct,
-        organic_links=data["organic_links"],
-    )
-
-    chunks = chunk_text(report_html, MAX_MESSAGE_LEN)
-    for chunk in chunks:
-        await msg.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
-
-    # Send photos (albums of up to 10)
-    photos = data.get("photos", [])
-    if photos:
-        # split into batches of MAX_ALBUM_PHOTOS
-        for i in range(0, len(photos), MAX_ALBUM_PHOTOS):
-            batch = photos[i:i+MAX_ALBUM_PHOTOS]
-            media = [types.InputMediaPhoto(media=file_id) for file_id in batch]
-            await msg.answer_media_group(media)
-
-    await state.clear()
-
-
-@router.message(ReportFSM.confirm)
-async def confirm_other(msg: types.Message, state: FSMContext):
-    await state.clear()
-    await msg.answer("Ок, отменил. Начнём заново командой /new_report")
-
-
-# Fallback handlers to catch wrong input for numeric steps
-@router.message(ReportFSM.planned)
-async def planned_invalid(msg: types.Message, state: FSMContext):
-    await msg.answer("Пожалуйста, введи число (например, 925000).")
-
-
-@router.message(ReportFSM.actual)
-async def actual_invalid(msg: types.Message, state: FSMContext):
-    await msg.answer("Пожалуйста, введи число (например, 1199200).")
 
 
 @router.message(ReportFSM.organic_reach)
-async def organic_invalid(msg: types.Message, state: FSMContext):
-    await msg.answer("Пожалуйста, введи число (например, 98541).")
+async def step_organic_reach(msg: types.Message, state: FSMContext):
+    try:
+        organic = parse_int(msg.text)
+    except Exception:
+        await msg.answer("Пожалуйста, введи число (например, 98541). Можно с пробелами.")
+        return
 
+    await state.update_data(organic_reach=organic)
+    await msg.answer("Отправь скриншоты (можно альбомом). Когда закончишь — напиши «Готово».")
+    await state.set_state(ReportFSM.screenshots)
+
+
+@router.message(ReportFSM.screenshots, F.photo)
+async def step_screenshots(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    photos.append(msg.photo[-1].file_id)
+    await state.update_data(photos=photos)
+
+
+@router.message(ReportFSM.screenshots, F.text.lower() == "готово")
+async def step_done(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    title = data.get("title", "")
+    period = data.get("period", "")
+    planned = data.get("planned", 0)
+    actual = data.get("actual", 0)
+    mediaplan = data.get("mediaplan", "")
+    organic_links = data.get("organic_links", "")
+    organic_reach = data.get("organic_reach", 0)
+    photos = data.get("photos", [])
+
+    diff = actual - planned
+    over = f"(+{diff:,})" if diff > 0 else f"({diff:,})"
+
+    text = (
+        f"<b>Отчёт по проекту:</b> {title}\n"
+        f"<b>Период:</b> {period}\n\n"
+        f"<b>Плановый охват:</b> {planned:,}\n"
+        f"<b>Фактический охват:</b> {actual:,} {over}\n"
+        f"<b>Медиаплан:</b> {mediaplan}\n\n"
+        f"<b>Органические ссылки:</b>\n{organic_links}\n"
+        f"<b>Органический охват:</b> {organic_reach:,}\n"
+    )
+
+    await msg.answer(text)
+    if photos:
+        media = [types.InputMediaPhoto(p) for p in photos]
+        await msg.answer_media_group(media)
+
+    await msg.answer("✅ Отчёт собран!")
+    await state.clear()
