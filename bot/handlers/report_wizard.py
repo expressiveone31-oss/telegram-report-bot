@@ -1,10 +1,9 @@
-# bot/handlers/report_wizard.py
 from __future__ import annotations
 
 import re
 from typing import List, Optional
 
-from aiogram import Router, types, F
+from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -14,14 +13,11 @@ from bot.utils.formatting import (
     chunk_text,
 )
 
-from bot.integrations.resolver import enrich_links_with_resolver  # обогащаем ТОЛЬКО платные посты
+# Обогащаем НАЗВАНИЯМИ только платные ссылки
+from bot.integrations.resolver import enrich_links_with_resolver
 
 router = Router(name=__name__)
 
-
-# -----------------------
-# FSM
-# -----------------------
 
 class ReportFSM(StatesGroup):
     title = State()
@@ -35,23 +31,15 @@ class ReportFSM(StatesGroup):
     done = State()
 
 
-# -----------------------
-# Helpers
-# -----------------------
-
 def _split_lines(text: str) -> List[str]:
     return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
 def _parse_int(s: str) -> int:
     s = (s or "").strip()
     s = s.replace(" ", "").replace("\u00A0", "")
-    # убрать запятые/точки-разделители
     s = re.sub(r"[,_\.](?=\d{3}\b)", "", s)
     return int(re.sub(r"[^\d\-]", "", s or "0"))
 
-# -----------------------
-# Start / Cancel
-# -----------------------
 
 @router.message(Command("cancel"))
 async def cmd_cancel(msg: types.Message, state: FSMContext):
@@ -66,10 +54,6 @@ async def cmd_new_report(msg: types.Message, state: FSMContext):
         "Название проекта или недели (например: <i>Кинопоиск — мемы</i>):",
         parse_mode="HTML"
     )
-
-# -----------------------
-# Steps
-# -----------------------
 
 @router.message(ReportFSM.title)
 async def step_title(msg: types.Message, state: FSMContext):
@@ -143,10 +127,6 @@ async def step_organic(msg: types.Message, state: FSMContext):
     await state.update_data(organic_links=msg.text)
     await _finish_and_send(msg, state)
 
-# -----------------------
-# Finish
-# -----------------------
-
 async def _finish_and_send(msg: types.Message, state: FSMContext):
     data = await state.get_data()
 
@@ -159,16 +139,14 @@ async def _finish_and_send(msg: types.Message, state: FSMContext):
     planned: int = int(data.get("planned") or 0)
     actual: int = int(data.get("actual") or 0)
     mediaplan: Optional[str] = data.get("mediaplan")
-    screenshots_url: Optional[str] = data.get("screenshots")  # ← будет выведено как «Скрины: …»
+    screenshots_url: Optional[str] = data.get("screenshots")
 
-    total = actual  # фактически в твоей логике «итого» = фактический + органика? оставим как есть, формула в форматтере
     growth_pct = 0.0
     if planned:
         growth_pct = round((actual - planned) / planned * 100, 2)
 
-    # Обогащаем ТОЛЬКО основной список (платные публикации)
+    # Обогащаем ТОЛЬКО основной список (виральные не трогаем)
     posts_links_list = await enrich_links_with_resolver(posts_links_list)
-    # Органику НЕ трогаем — оставляем как есть (просто URL)
 
     html = format_report_html(
         title=title,
@@ -176,15 +154,14 @@ async def _finish_and_send(msg: types.Message, state: FSMContext):
         posts_links=posts_links_list,
         planned=planned,
         actual=actual,
-        organic=0,                         # органический охват ты передаёшь ниже вручную (если нужен — можно добавить шаг)
-        total=actual,                      # итог из факта (счёт ведёшь ты — оставляем так, как работало)
+        organic=0,                    # при необходимости сюда можно прокинуть фактическую органику
+        total=actual,
         mediaplan=mediaplan or "",
-        screenshots_folder_url=screenshots_url,   # ← сюда попадёт ссылка «Скрины»
+        screenshots_folder_url=screenshots_url,
         growth_pct=growth_pct,
         organic_links=organic_links_list,
     )
 
-    # шлём по частям если длинно
     for part in chunk_text(html, 3500):
         await msg.answer(part, parse_mode="HTML", disable_web_page_preview=True)
 
