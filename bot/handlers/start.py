@@ -1,11 +1,14 @@
 from aiogram import Router, types
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from bot.config import ADMIN_IDS
 
 router = Router()
 
+
 @router.message(CommandStart())
-async def start(msg: types.Message):
+async def start(msg: types.Message, state: FSMContext):
+    await state.clear()
     if ADMIN_IDS and msg.from_user and msg.from_user.id not in ADMIN_IDS:
         await msg.answer("Доступ ограничен. Обратитесь к администратору.")
         return
@@ -15,7 +18,3 @@ async def start(msg: types.Message):
         "/new_report — создать отчёт\n"
         "/cancel — отменить ввод\n"
     )
-
-@router.message(Command("cancel"))
-async def cancel(msg: types.Message):
-    await msg.answer("Ок, отменил. Используй /new_report, чтобы начать заново.")

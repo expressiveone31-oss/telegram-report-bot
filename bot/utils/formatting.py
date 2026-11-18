@@ -1,6 +1,17 @@
+from html import escape
 from typing import List, Tuple, Optional
 import re
 from urllib.parse import urlparse
+
+
+def html_text(value: str) -> str:
+    """Escape text that is inserted into an HTML message."""
+    return escape(value or "", quote=False)
+
+
+def html_attr(value: str) -> str:
+    """Escape a value placed into an HTML attribute (href)."""
+    return escape(value or "", quote=True)
 
 
 # -----------------------
@@ -110,7 +121,9 @@ def format_report_html(
     if posts:
         posts_block_lines.append("<b>Ссылки на вышедшие публикации:</b>")
         for label, url in posts:
-            posts_block_lines.append(f"• <a href=\"{url}\">{label}</a>")
+            posts_block_lines.append(
+                f"• <a href=\"{html_attr(url)}\">{html_text(label)}</a>"
+            )
         posts_block_lines.append("")
 
     # органика — ТОЛЬКО ССЫЛКИ (без преобразования в названия)
@@ -121,13 +134,13 @@ def format_report_html(
             "Также по проекту есть органика. Коллеги собрали ссылки на посты, которые вышли органически:"
         )
         for u in org_urls:
-            organic_lines.append(f"<a href=\"{u}\">{u}</a>")
+            organic_lines.append(f"<a href=\"{html_attr(u)}\">{html_text(u)}</a>")
         organic_lines.append("")
 
     lines: list[str] = []
-    lines.append(f"<b>Отчёт по проекту:</b>\n{title}")
+    lines.append(f"<b>Отчёт по проекту:</b>\n{html_text(title)}")
     if period:
-        lines.append(f"<b>Период:</b> {period}")
+        lines.append(f"<b>Период:</b> {html_text(period)}")
     lines.append("")
 
     if posts_block_lines:
@@ -139,9 +152,9 @@ def format_report_html(
     lines.append("")
 
     if screenshots_folder_url:
-        lines.append(f"<b>Скрины:</b> {screenshots_folder_url}")
+        lines.append(f"<b>Скрины:</b> {html_text(screenshots_folder_url)}")
     if mediaplan:
-        lines.append(f"<b>МП:</b> {mediaplan}")
+        lines.append(f"<b>МП:</b> {html_text(mediaplan)}")
     if mediaplan or screenshots_folder_url:
         lines.append("")
 

@@ -1,9 +1,10 @@
 from aiogram import Router, F, types
-from aiogram.filters import Command
+from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 import re
 
+from bot.config import MAX_ALBUM_PHOTOS
 from bot.utils.formatting import format_report_html, chunk_text
 
 router = Router()
@@ -42,6 +43,36 @@ def _split_lines(raw: str) -> list[str]:
     return [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
 
 
+def is_done_text(text: str | None) -> bool:
+    """«Готово», «готово.» и « готово!» — сигнал закончить приём скринов."""
+    normalized = (text or "").strip().lower().strip(".!…,")
+    return normalized == "готово"
+
+
+class DoneText(Filter):
+    async def __call__(self, message: types.Message) -> bool:
+        return is_done_text(message.text)
+
+
+async def _require_text(msg: types.Message, hint: str) -> str | None:
+    text = (msg.text or "").strip()
+    if text:
+        return text
+    await msg.answer(hint)
+    return None
+
+
+async def send_photos(msg: types.Message, photos: list[str]) -> None:
+    """Telegram accepts a media group of 2–10 items. One photo is a regular message."""
+    for offset in range(0, len(photos), MAX_ALBUM_PHOTOS):
+        chunk = photos[offset : offset + MAX_ALBUM_PHOTOS]
+        if len(chunk) == 1:
+            await msg.answer_photo(chunk[0])
+            continue
+        media = [types.InputMediaPhoto(media=file_id) for file_id in chunk]
+        await msg.answer_media_group(media)
+
+
 # --- commands ---
 
 @router.message(Command("new_report"))
@@ -63,14 +94,20 @@ async def cancel_report(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.title)
 async def step_title(msg: types.Message, state: FSMContext):
-    await state.update_data(title=msg.text.strip())
+    title = await _require_text(msg, "Пришли название текстом.")
+    if title is None:
+        return
+    await state.update_data(title=title)
     await state.set_state(ReportFSM.period)
     await msg.answer("Период проекта (например: <i>14–20 октября</i>):")
 
 
 @router.message(ReportFSM.period)
 async def step_period(msg: types.Message, state: FSMContext):
-    await state.update_data(period=msg.text.strip())
+    period = await _require_text(msg, "Пришли период текстом.")
+    if period is None:
+        return
+    await state.update_data(period=period)
     await state.set_state(ReportFSM.posts_links)
     await msg.answer(
         "Ссылки на вышедшие публикации (каждую с новой строки).\n"
@@ -81,15 +118,21 @@ async def step_period(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.posts_links)
 async def step_posts_links(msg: types.Message, state: FSMContext):
-    await state.update_data(posts_links=msg.text)
+    posts = await _require_text(msg, "Пришли ссылки текстом, каждую с новой строки.")
+    if posts is None:
+        return
+    await state.update_data(posts_links=posts)
     await state.set_state(ReportFSM.planned)
     await msg.answer("Планируемый охват (число):")
 
 
 @router.message(ReportFSM.planned)
 async def step_planned(msg: types.Message, state: FSMContext):
+    raw = await _require_text(msg, "Пожалуйста, введи число (например, 1233500). Можно с пробелами.")
+    if raw is None:
+        return
     try:
-        planned = parse_int(msg.text)
+        planned = parse_int(raw)
     except Exception:
         await msg.answer("Пожалуйста, введи число (например, 1233500). Можно с пробелами.")
         return
@@ -100,8 +143,11 @@ async def step_planned(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.actual)
 async def step_actual(msg: types.Message, state: FSMContext):
+    raw = await _require_text(msg, "Пожалуйста, введи число (например, 1199200). Можно с пробелами.")
+    if raw is None:
+        return
     try:
-        actual = parse_int(msg.text)
+        actual = parse_int(raw)
     except Exception:
         await msg.answer("Пожалуйста, введи число (например, 1199200). Можно с пробелами.")
         return
@@ -112,7 +158,10 @@ async def step_actual(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.mediaplan)
 async def step_mediaplan(msg: types.Message, state: FSMContext):
-    await state.update_data(mediaplan=msg.text.strip())
+    mediaplan = await _require_text(msg, "Пришли ссылку на медиаплан текстом.")
+    if mediaplan is None:
+        return
+    await state.update_data(mediaplan=mediaplan)
     await state.set_state(ReportFSM.organic_links)
     await msg.answer(
         "Органические публикации (каждую с новой строки, формат как выше: "
@@ -122,7 +171,9 @@ async def step_mediaplan(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.organic_links)
 async def step_organic_links(msg: types.Message, state: FSMContext):
-    raw = (msg.text or "").strip()
+    raw = await _require_text(msg, "Пришли ссылки текстом или «-», если органики нет.")
+    if raw is None:
+        return
     await state.update_data(organic_links=(" " if raw == "-" else raw))
     await state.set_state(ReportFSM.organic_reach)
     await msg.answer("Органический охват (число, если есть; если нет — 0):")
@@ -130,8 +181,14 @@ async def step_organic_links(msg: types.Message, state: FSMContext):
 
 @router.message(ReportFSM.organic_reach)
 async def step_organic_reach(msg: types.Message, state: FSMContext):
+    raw = await _require_text(
+        msg,
+        "Пожалуйста, введи число (например, 98541). Можно с пробелами. Если нет — 0.",
+    )
+    if raw is None:
+        return
     try:
-        organic = parse_int(msg.text)
+        organic = parse_int(raw)
     except Exception:
         await msg.answer("Пожалуйста, введи число (например, 98541). Можно с пробелами. Если нет — 0.")
         return
@@ -149,7 +206,7 @@ async def step_screenshots_collect(msg: types.Message, state: FSMContext):
     await state.update_data(photos=photos)
 
 
-@router.message(ReportFSM.screenshots, F.text.lower() == "готово")
+@router.message(ReportFSM.screenshots, DoneText())
 async def step_screenshots_done(msg: types.Message, state: FSMContext):
     data = await state.get_data()
 
@@ -192,8 +249,17 @@ async def step_screenshots_done(msg: types.Message, state: FSMContext):
         await msg.answer(part)
 
     if photos:
-        media = [types.InputMediaPhoto(p) for p in photos]
-        await msg.answer_media_group(media)
+        await send_photos(msg, photos)
 
     await msg.answer("✅ Отчёт собран!")
     await state.clear()
+
+
+@router.message(ReportFSM.screenshots)
+async def step_screenshots_wait(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    count = len(data.get("photos", []))
+    await msg.answer(
+        f"Пока собрано скринов: {count}. "
+        "Пришли ещё фото или напиши «Готово», когда закончишь."
+    )
